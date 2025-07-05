@@ -213,7 +213,7 @@ else:
                         article_prompt = article_prompt.replace("｛チャットで入力した▼記事構成案｝", generated_outline)
 
                         article_response = client.models.generate_content(
-                            model="gemini-2.5-pro",
+                            model="gemini-2.5-flash",
                             contents=article_prompt,
                             config=generation_config,
                         )
