@@ -252,7 +252,6 @@ else:
 
                         for i in range(6):
                             st.write(f"挿絵 {i+1}/6 を生成中...")
-                            
                             # 新しいAPIにあわせてgeneration_configを辞書として渡します。
                             generation_config_dict = {
                                 "response_modalities": ["IMAGE", "TEXT"],    
@@ -266,6 +265,10 @@ else:
                                 contents=sashie_generation_prompt,
                                 config=generation_config
                             )
+
+                            # ここでresponseの構造を表示
+                            st.write(f"--- Gemini画像生成API response構造 (挿絵 {i+1}) ---")
+                            st.write(response)
 
                             image_bytes = None
                             image = None
