@@ -2,6 +2,7 @@ import streamlit as st
 import sys
 from PIL import Image
 import io
+import openai
 
 st.write(f"**診断情報:**")
 st.write(f"* Python実行パス: `{sys.executable}`")
@@ -183,7 +184,7 @@ else:
                         midashi_prompt = midashi_prompt.replace("｛チャットで入力した▼見出し用キーワードリスト｝", current_heading_keywords_list)
 
                         midashi_response = client.models.generate_content(
-                            model="gemini-2.5-pro",
+                            model="gemini-2.5-flash",
                             contents=midashi_prompt,
                             config=generation_config,
                         )
@@ -215,7 +216,7 @@ else:
                         article_prompt = article_prompt.replace("｛チャットで入力した▼記事構成案｝", generated_outline)
 
                         article_response = client.models.generate_content(
-                            model="gemini-2.5-pro",
+                            model="gemini-2.5-flash",
                             contents=article_prompt,
                             config=generation_config,
                         )
@@ -230,65 +231,46 @@ else:
                 elif st.session_state.process_status == "画像を生成中...":
                     try:
                         st.write("--- 挿絵生成情報 ---")
-                        # Configure the client
-                        client = genai.Client()
-
+                        # OpenAI APIキーをsecretsから取得
+                        openai_api_key = st.secrets["openai"]["api_key"]
                         # 挿絵生成用のプロンプトを作成
                         sashie_prompt_template = st.secrets["prompts"]["sashie_pronpt"]
-                        article_content_for_sashie = f"メインキーワード: {current_main_keyword}\n見出し用キーワードリスト: {current_heading_keywords_list}"
+                        article_content_for_sashie = f"メインキーワード: {current_main_keyword}\n見出し用キーワードリスト: {current_heading_keywords_list}\n記事本文: {st.session_state.get('generated_article', '')}"
                         sashie_prompt = sashie_prompt_template.replace("{article_content}", article_content_for_sashie)
-
-                        st.write("挿絵生成用プロンプトを作成中...")
+                        st.write("挿絵生成用プロンプトをGeminiで生成中...")
+                        # Geminiで挿絵用プロンプトを生成
+                        os.environ["GOOGLE_API_KEY"] = st.secrets["gemini"]["api_key"]
+                        client = genai.Client()
                         sashie_response = client.models.generate_content(
-                            model="gemini-2.5-pro",
+                            model="gemini-2.5-flash",
                             contents=sashie_prompt,
                         )
-                        sashie_generation_prompt = sashie_response.text.strip()
-                        st.write(f"生成された挿絵プロンプト: {sashie_generation_prompt}")
-
+                        dall_e_prompt = sashie_response.text.strip()
+                        st.write(f"DALL-E用挿絵プロンプト: {dall_e_prompt}")
                         # 6つの挿絵を生成
                         st.session_state.generated_images = []
-                        image_model_name = "gemini-2.0-flash-preview-image-generation"
-
                         for i in range(6):
                             st.write(f"挿絵 {i+1}/6 を生成中...")
-                            # 新しいAPIにあわせてgeneration_configを辞書として渡します。
-                            generation_config_dict = {
-                                "response_modalities": ["IMAGE", "TEXT"],    
-                                "response_mime_type": "text/plain",
-                            }
-                            generation_config = types.GenerateContentConfig(**generation_config_dict)
-
-                            # 新しいAPIではプロンプトを直接渡し、設定を追加します
-                            response = client.models.generate_content(
-                                model=image_model_name,
-                                contents=sashie_generation_prompt,
-                                config=generation_config
+                            response = openai.OpenAI(api_key=openai_api_key).images.generate(
+                                model="dall-e-3",
+                                prompt=dall_e_prompt,
+                                n=1,
+                                size="1792x1024",
+                                response_format="url",
                             )
-
-                            # ここでresponseの構造を表示
-                            st.write(f"--- Gemini画像生成API response構造 (挿絵 {i+1}) ---")
-                            st.write(response)
-
+                            image_url = response.data[0].url
                             image_bytes = None
                             image = None
-                            mime_type = None
-
-                            # レスポンスから画像データを抽出
-                            if response.candidates:
-                                for part in response.candidates[0].content.parts:
-                                    if part.inline_data:
-                                        base64_encoded_data = part.inline_data.data
-                                        image_bytes = base64.b64decode(base64_encoded_data)
-                                        try:
-                                            image = Image.open(io.BytesIO(image_bytes))
-                                        except Exception as e:
-                                            st.error(f"PILで画像化に失敗: {e}")
-                                            image = None
-                                        mime_type = part.inline_data.mime_type
-                                        break # 画像を見つけたらループを抜ける
-
-                            if image and mime_type:
+                            mime_type = "image/png"
+                            # 画像をダウンロード
+                            try:
+                                img_response = requests.get(image_url)
+                                image_bytes = img_response.content
+                                image = Image.open(io.BytesIO(image_bytes))
+                            except Exception as e:
+                                st.error(f"画像のダウンロードまたはPILで画像化に失敗: {e}")
+                                image = None
+                            if image and image_bytes:
                                 st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
                                 st.session_state.generated_images.append({
                                     'bytes': image_bytes,
@@ -298,7 +280,6 @@ else:
                                 })
                             else:
                                 st.error(f"挿絵 {i+1} の生成に失敗しました。")
-
                         if len(st.session_state.generated_images) > 0:
                             st.write(f"挿絵生成完了: {len(st.session_state.generated_images)}個の挿絵を生成しました。")
                             st.session_state.process_status = "WordPressに投稿中..."
@@ -306,7 +287,6 @@ else:
                         else:
                             st.error("挿絵の生成に失敗しました。")
                             st.session_state.process_status = "エラー: 挿絵生成に失敗しました。"
-
                     except Exception as e:
                         st.error("挿絵生成API呼び出しで例外が発生しました。以下に詳細を示します：")
                         st.exception(e)

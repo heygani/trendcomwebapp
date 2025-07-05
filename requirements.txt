@@ -1,7 +1,8 @@
 streamlit
 streamlit-oauth
-google-generativeai>=0.4.0
+google-generativeai
 requests
 streamlit-cookies-manager
 google-genai
 Pillow
+OpenAI
