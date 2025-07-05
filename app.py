@@ -213,7 +213,7 @@ else:
                         article_prompt = article_prompt.replace("｛チャットで入力した▼記事構成案｝", generated_outline)
 
                         article_response = client.models.generate_content(
-                            model="gemini-2.5-flash",
+                            model="gemini-2.5-pro",
                             contents=article_prompt,
                             config=generation_config,
                         )
@@ -251,20 +251,13 @@ else:
                         for i in range(6):
                             st.write(f"挿絵 {i+1}/6 を生成中...")
                             
-                            # 画像生成用の設定を修正
-                            generation_config = types.GenerateContentConfig(
-                                response_modalities=["IMAGE"],
-                                response_mime_type="image/png"
-                            )
-
                             # 画像生成用のプロンプトを作成
                             image_prompt = f"{sashie_generation_prompt} - 高品質な画像を生成してください。"
                             
-                            # 画像生成APIを呼び出し
+                            # 画像生成APIを呼び出し（設定なしでシンプルに）
                             response = client.models.generate_content(
                                 model=image_model_name,
-                                contents=image_prompt,
-                                config=generation_config
+                                contents=image_prompt
                             )
 
                             image_bytes = None
