@@ -251,17 +251,19 @@ else:
                         for i in range(6):
                             st.write(f"挿絵 {i+1}/6 を生成中...")
                             
-                            # 新しいAPIにあわせてgeneration_configを辞書として渡します。
-                            generation_config_dict = {
-                                "response_modalities": ["IMAGE", "TEXT"],    
-                                "response_mime_type": "text/plain",
-                            }
-                            generation_config = types.GenerateContentConfig(**generation_config_dict)
+                            # 画像生成用の設定を修正
+                            generation_config = types.GenerateContentConfig(
+                                response_modalities=["IMAGE"],
+                                response_mime_type="image/png"
+                            )
 
-                            # 新しいAPIではプロンプトを直接渡し、設定を追加します
+                            # 画像生成用のプロンプトを作成
+                            image_prompt = f"{sashie_generation_prompt} - 高品質な画像を生成してください。"
+                            
+                            # 画像生成APIを呼び出し
                             response = client.models.generate_content(
                                 model=image_model_name,
-                                contents=sashie_generation_prompt,
+                                contents=image_prompt,
                                 config=generation_config
                             )
 
@@ -281,6 +283,12 @@ else:
                                     st.write(f"候補 {i+1} のパーツ数: {len(candidate.content.parts)}")
                                     for j, part in enumerate(candidate.content.parts):
                                         st.write(f"  パーツ {j+1} タイプ: {type(part)}")
+                                        
+                                        # テキストパーツの場合はスキップ
+                                        if hasattr(part, 'text') and part.text:
+                                            st.write(f"    テキストパーツ発見: {part.text[:100]}...")
+                                            continue
+                                            
                                         if hasattr(part, 'inline_data') and part.inline_data:
                                             st.write(f"    インラインデータ発見: {part.inline_data.mime_type}")
                                             # The API returns Base64 encoded data, so we need to decode it.
@@ -301,6 +309,9 @@ else:
                             if not image_bytes:
                                 st.write("画像データが見つかりませんでした。レスポンス全体を確認:")
                                 st.write(f"レスポンス: {response}")
+                                # テキストのみが返された場合はスキップ
+                                st.warning(f"挿絵 {i+1} は画像ではなくテキストが返されました。スキップします。")
+                                continue
 
                             if image_bytes and mime_type:
                                 try:
