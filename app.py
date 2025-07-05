@@ -3,6 +3,7 @@ import sys
 from PIL import Image
 import io
 import openai
+import time
 
 st.write(f"**診断情報:**")
 st.write(f"* Python実行パス: `{sys.executable}`")
@@ -252,35 +253,40 @@ else:
                         st.session_state.generated_images = []
                         for i in range(6):
                             st.write(f"挿絵 {i+1}/6 を生成中...")
-                            response = openai.OpenAI(api_key=openai_api_key).images.generate(
-                                model="dall-e-3",
-                                prompt=dall_e_prompt,
-                                n=1,
-                                size="1792x1024",
-                                response_format="url",
-                            )
-                            image_url = response.data[0].url
-                            image_bytes = None
-                            image = None
-                            mime_type = "image/png"
-                            # 画像をダウンロード
                             try:
-                                img_response = requests.get(image_url)
-                                image_bytes = img_response.content
-                                image = Image.open(io.BytesIO(image_bytes))
-                            except Exception as e:
-                                st.error(f"画像のダウンロードまたはPILで画像化に失敗: {e}")
+                                response = openai.OpenAI(api_key=openai_api_key).images.generate(
+                                    model="dall-e-3",
+                                    prompt=dall_e_prompt,
+                                    n=1,
+                                    size="1792x1024",
+                                    response_format="url",
+                                )
+                                image_url = response.data[0].url
+                                image_bytes = None
                                 image = None
-                            if image and image_bytes:
-                                st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
-                                st.session_state.generated_images.append({
-                                    'bytes': image_bytes,
-                                    'mime_type': mime_type,
-                                    'index': i+1,
-                                    'image': image
-                                })
-                            else:
-                                st.error(f"挿絵 {i+1} の生成に失敗しました。")
+                                mime_type = "image/png"
+                                # 画像をダウンロード
+                                try:
+                                    img_response = requests.get(image_url)
+                                    image_bytes = img_response.content
+                                    image = Image.open(io.BytesIO(image_bytes))
+                                except Exception as e:
+                                    st.error(f"画像のダウンロードまたはPILで画像化に失敗: {e}")
+                                    image = None
+                                if image and image_bytes:
+                                    st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
+                                    st.session_state.generated_images.append({
+                                        'bytes': image_bytes,
+                                        'mime_type': mime_type,
+                                        'index': i+1,
+                                        'image': image
+                                    })
+                                else:
+                                    st.error(f"挿絵 {i+1} の生成に失敗しました。")
+                            except Exception as e:
+                                st.warning(f"挿絵 {i+1} の生成中にエラーが発生しました: {e}")
+                                continue
+                            time.sleep(1)
                         if len(st.session_state.generated_images) > 0:
                             st.write(f"挿絵生成完了: {len(st.session_state.generated_images)}個の挿絵を生成しました。")
                             st.session_state.process_status = "WordPressに投稿中..."
