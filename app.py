@@ -279,12 +279,24 @@ else:
                                         break # 画像を見つけたらループを抜ける
 
                             if image_bytes and mime_type:
-                                st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
-                                st.session_state.generated_images.append({
-                                    'bytes': image_bytes,
-                                    'mime_type': mime_type,
-                                    'index': i+1
-                                })
+                                try:
+                                    # 画像データの検証
+                                    import io
+                                    from PIL import Image
+                                    
+                                    image_io = io.BytesIO(image_bytes)
+                                    pil_image = Image.open(image_io)
+                                    pil_image.verify()
+                                    
+                                    st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
+                                    st.session_state.generated_images.append({
+                                        'bytes': image_bytes,
+                                        'mime_type': mime_type,
+                                        'index': i+1
+                                    })
+                                except Exception as e:
+                                    st.error(f"挿絵 {i+1} の画像データが無効です: {e}")
+                                    st.write(f"受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
                             else:
                                 st.error(f"挿絵 {i+1} の生成に失敗しました。")
 
@@ -435,11 +447,32 @@ else:
                     if st.session_state.get("generated_images"):
                         st.markdown("#### 生成された挿絵")
                         for i, image_data in enumerate(st.session_state.generated_images):
-                            st.image(image_data['bytes'], caption=f"挿絵 {i+1}")
+                            try:
+                                # 画像データをBytesIOオブジェクトに変換
+                                import io
+                                from PIL import Image
+                                
+                                image_bytes = image_data['bytes']
+                                image_io = io.BytesIO(image_bytes)
+                                
+                                # PILで画像を開いて検証
+                                pil_image = Image.open(image_io)
+                                pil_image.verify()  # 画像の整合性を確認
+                                
+                                # BytesIOをリセット
+                                image_io.seek(0)
+                                
+                                # Streamlitで画像を表示
+                                st.image(image_io, caption=f"挿絵 {i+1}")
+                                
+                            except Exception as e:
+                                st.error(f"挿絵 {i+1} の表示に失敗しました: {e}")
+                                st.write(f"画像データサイズ: {len(image_data['bytes'])} bytes")
+                                st.write(f"MIMEタイプ: {image_data['mime_type']}")
                     st.markdown(st.session_state.generated_article)
 
         elif user_email:
-            st.error(f"アクセスが許可されていません。このアプリは {TARGET_EMAIL} のみ利用できます。現在 {user_email} でログインしています。")
+            st.error(f"アクセスが許可されていません。現在 {user_email} でログインしています。")
             if st.button("ログアウト"):
                 st.session_state.token = None
                 cookies.delete("token")
