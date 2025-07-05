@@ -269,14 +269,38 @@ else:
                             mime_type = None
 
                             # レスポンスから画像データを抽出
-                            if response.candidates:
-                                for part in response.candidates[0].content.parts:
-                                    if part.inline_data:
-                                        # The API returns Base64 encoded data, so we need to decode it.
-                                        base64_encoded_data = part.inline_data.data
-                                        image_bytes = base64.b64decode(base64_encoded_data)
-                                        mime_type = part.inline_data.mime_type
-                                        break # 画像を見つけたらループを抜ける
+                            image_bytes = None
+                            mime_type = None
+                            
+                            st.write(f"レスポンス構造をデバッグ中...")
+                            st.write(f"レスポンスタイプ: {type(response)}")
+                            
+                            if hasattr(response, 'candidates') and response.candidates:
+                                st.write(f"候補数: {len(response.candidates)}")
+                                for i, candidate in enumerate(response.candidates):
+                                    st.write(f"候補 {i+1} のパーツ数: {len(candidate.content.parts)}")
+                                    for j, part in enumerate(candidate.content.parts):
+                                        st.write(f"  パーツ {j+1} タイプ: {type(part)}")
+                                        if hasattr(part, 'inline_data') and part.inline_data:
+                                            st.write(f"    インラインデータ発見: {part.inline_data.mime_type}")
+                                            # The API returns Base64 encoded data, so we need to decode it.
+                                            base64_encoded_data = part.inline_data.data
+                                            image_bytes = base64.b64decode(base64_encoded_data)
+                                            mime_type = part.inline_data.mime_type
+                                            break # 画像を見つけたらループを抜ける
+                                        elif hasattr(part, 'file_data') and part.file_data:
+                                            st.write(f"    ファイルデータ発見: {part.file_data.mime_type}")
+                                            # ファイルデータの場合
+                                            base64_encoded_data = part.file_data.data
+                                            image_bytes = base64.b64decode(base64_encoded_data)
+                                            mime_type = part.file_data.mime_type
+                                            break
+                                    if image_bytes:
+                                        break
+                            
+                            if not image_bytes:
+                                st.write("画像データが見つかりませんでした。レスポンス全体を確認:")
+                                st.write(f"レスポンス: {response}")
 
                             if image_bytes and mime_type:
                                 try:
@@ -284,9 +308,31 @@ else:
                                     import io
                                     from PIL import Image
                                     
+                                    st.write(f"画像データ検証中... サイズ: {len(image_bytes)} bytes, MIME: {mime_type}")
+                                    
+                                    # 最初の数バイトを確認して画像形式を判定
+                                    if len(image_bytes) >= 4:
+                                        header = image_bytes[:4]
+                                        st.write(f"画像ヘッダー: {header.hex()}")
+                                        
+                                        # 一般的な画像形式のヘッダー
+                                        if header.startswith(b'\xff\xd8\xff'):  # JPEG
+                                            st.write("JPEG形式を検出")
+                                        elif header.startswith(b'\x89PNG'):  # PNG
+                                            st.write("PNG形式を検出")
+                                        elif header.startswith(b'GIF8'):  # GIF
+                                            st.write("GIF形式を検出")
+                                        else:
+                                            st.write("未知の画像形式")
+                                    
                                     image_io = io.BytesIO(image_bytes)
                                     pil_image = Image.open(image_io)
-                                    pil_image.verify()
+                                    
+                                    # 画像情報を表示
+                                    st.write(f"画像サイズ: {pil_image.size}, モード: {pil_image.mode}")
+                                    
+                                    # 画像をリセット
+                                    image_io.seek(0)
                                     
                                     st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
                                     st.session_state.generated_images.append({
@@ -297,6 +343,9 @@ else:
                                 except Exception as e:
                                     st.error(f"挿絵 {i+1} の画像データが無効です: {e}")
                                     st.write(f"受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
+                                    # データの最初の数バイトを表示してデバッグ
+                                    if len(image_bytes) > 0:
+                                        st.write(f"データの最初の20バイト: {image_bytes[:20].hex()}")
                             else:
                                 st.error(f"挿絵 {i+1} の生成に失敗しました。")
 
