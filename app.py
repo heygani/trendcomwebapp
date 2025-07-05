@@ -1,5 +1,7 @@
 import streamlit as st
 import sys
+from PIL import Image
+import io
 
 st.write(f"**診断情報:**")
 st.write(f"* Python実行パス: `{sys.executable}`")
@@ -266,24 +268,30 @@ else:
                             )
 
                             image_bytes = None
+                            image = None
                             mime_type = None
 
                             # レスポンスから画像データを抽出
                             if response.candidates:
                                 for part in response.candidates[0].content.parts:
                                     if part.inline_data:
-                                        # The API returns Base64 encoded data, so we need to decode it.
                                         base64_encoded_data = part.inline_data.data
                                         image_bytes = base64.b64decode(base64_encoded_data)
+                                        try:
+                                            image = Image.open(io.BytesIO(image_bytes))
+                                        except Exception as e:
+                                            st.error(f"PILで画像化に失敗: {e}")
+                                            image = None
                                         mime_type = part.inline_data.mime_type
                                         break # 画像を見つけたらループを抜ける
 
-                            if image_bytes and mime_type:
+                            if image and mime_type:
                                 st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
                                 st.session_state.generated_images.append({
                                     'bytes': image_bytes,
                                     'mime_type': mime_type,
-                                    'index': i+1
+                                    'index': i+1,
+                                    'image': image
                                 })
                             else:
                                 st.error(f"挿絵 {i+1} の生成に失敗しました。")
@@ -435,7 +443,7 @@ else:
                     if st.session_state.get("generated_images"):
                         st.markdown("#### 生成された挿絵")
                         for i, image_data in enumerate(st.session_state.generated_images):
-                            st.image(image_data['bytes'], caption=f"挿絵 {i+1}")
+                            st.image(image_data['image'], caption=f"挿絵 {i+1}")
                     st.markdown(st.session_state.generated_article)
 
         elif user_email:
