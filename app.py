@@ -4,29 +4,21 @@ from PIL import Image
 import io
 import openai
 import time
+import csv
+import re
 
-st.write(f"**診断情報:**")
-st.write(f"* Python実行パス: `{sys.executable}`")
-try:
-    import google.generativeai
-    st.write(f"* google-generativeai バージョン: `{google.generativeai.__version__}`")
-except ImportError:
-    st.write("* google-generativeai はこの環境にインストールされていません。")
-st.write("--- ")
+
 
 from streamlit_oauth import OAuth2Component
 from streamlit_cookies_manager import CookieManager
 import datetime
-import google.generativeai as genai
-from google.generativeai import types
+from google import genai
+from google.genai import types
 import requests
 import base64
 import json
 import mimetypes
 import os
-from google import genai
-from google.genai import types
-
 
 st.set_page_config(
     page_title="WordPress Article Generator",
@@ -48,7 +40,6 @@ TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, TARGET_EMAIL]):
     st.error("必要な認証情報がsecrets.tomlに設定されていません。ファイルを確認してください。")
 else:
-    # Cookie Managerを初期化します
     cookies = CookieManager()
 
     # --- Authentication ---
@@ -68,9 +59,7 @@ else:
             st.session_state.token = None
             st.info("Cookie Manager is initializing. Please wait...")
             st.stop()
-            # st.experimental_rerun()  # st.experimental_rerun() は削除
-    
-    # Ensure st.session_state.token is a dictionary if it exists
+
     if st.session_state.token and not isinstance(st.session_state.token, dict):
         st.error("認証トークンが不正な形式です。再ログインしてください。")
         st.session_state.token = None
@@ -125,181 +114,224 @@ else:
 
         if user_email == TARGET_EMAIL:
             st.success(f"Logged in as {user_email}")
-            st.info("キーワードからGemini APIを用いてWordPressに記事と画像を生成・投稿します。")
+            st.info("キーワードやCSVからGemini APIを用いてWordPressに記事と画像を生成・投稿します。")
+
+            # --- Configure APIs ---
+            try:
+                openai.api_key = st.secrets["openai"]["api_key"]
+            except Exception as e:
+                st.error(f"OpenAI APIキーの設定中にエラーが発生しました: {e}")
+                st.stop()
+
 
             # --- Main Application Page ---
             st.header("📝 記事生成")
+
+            uploaded_file = st.file_uploader(
+                "CSVファイルをアップロードして複数記事を生成 (1列目: キーワード, 2列目: アフィリエイトHTML)",
+                type=['csv']
+            )
+            st.markdown("--- **または** ---")
+
             keyword = st.text_area(
-                "キーワードを入力してください：",
+                "キーワードを入力してください（単一記事）：",
                 height=150,
                 value="メインキーワード:\n見出し用キーワードリスト: ",
                 placeholder="例: メインキーワード: 最新のAI技術トレンド, 見出し用キーワードリスト: AI倫理, 機械学習, ディープラーニング, 自然言語処理, コンピュータビジョン, 強化学習, エッジAI, 量子AI, AIの未来, AIと社会"
             )
             
             affiliate_html = st.text_area(
-                "アフィリエイト用HTMLコード（オプション）：",
+                "アフィリエイト用HTMLコード（単一記事・オプション）：",
                 height=100,
-                placeholder="例: <a href='https://example.com' target='_blank'>商品リンク</a>"
+                placeholder="<a href='https://example.com' target='_blank'>商品リンク</a>"
             )
             
             if st.button("記事を生成してWordPressに投稿", key="generate_and_post_button"):
-                if keyword:
-                    # Parse the input string
-                    main_keyword = ""
-                    heading_keywords_list = ""
+                articles_to_generate = []
+                if uploaded_file is not None:
+                    try:
+                        stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8-sig"))
+                        csv_reader = csv.reader(stringio)
+                        for row in csv_reader:
+                            if not row or not row[0].strip(): continue
+                            
+                            keyword_data = row[0]
+                            aff_html = row[1] if len(row) > 1 else ""
+                            main_kw, heading_kws = "", ""
 
+                            if "メインキーワード:" in keyword_data and "見出し用キーワードリスト:" in keyword_data:
+                                parts = keyword_data.split("見出し用キーワードリスト:")
+                                main_kw = parts[0].replace("メインキーワード:", "").strip()
+                                heading_kws = parts[1].strip()
+                            else:
+                                main_kw = keyword_data.strip()
+                            
+                            articles_to_generate.append({
+                                "main_keyword": main_kw,
+                                "heading_keywords_list": heading_kws,
+                                "affiliate_html": aff_html
+                            })
+                        
+                        if not articles_to_generate:
+                            st.error("CSVファイルが空か、内容が不正です。")
+                            st.stop()
+                    except Exception as e:
+                        st.error(f"CSVファイルの読み込み中にエラーが発生しました: {e}")
+                        st.stop()
+                elif keyword.strip() and "メインキーワード:" in keyword:
+                    main_kw, heading_kws = "", ""
                     if "メインキーワード:" in keyword and "見出し用キーワードリスト:" in keyword:
                         parts = keyword.split("見出し用キーワードリスト:")
-                        main_keyword_part = parts[0].replace("メインキーワード:", "").strip()
-                        heading_keywords_list_part = parts[1].strip()
-
-                        main_keyword = main_keyword_part
-                        heading_keywords_list = heading_keywords_list_part
+                        main_kw = parts[0].replace("メインキーワード:", "").strip()
+                        heading_kws = parts[1].strip()
+                        articles_to_generate.append({
+                            "main_keyword": main_kw,
+                            "heading_keywords_list": heading_kws,
+                            "affiliate_html": affiliate_html
+                        })
                     else:
-                        st.error("入力形式が正しくありません。「メインキーワード: ... , 見出し用キーワードリスト: ...」の形式で入力してください。")
+                        st.error("単一記事の入力形式が正しくありません。")
                         st.stop()
-
-                    st.session_state.main_keyword = main_keyword
-                    st.session_state.heading_keywords_list = heading_keywords_list
-                    st.session_state.affiliate_html = affiliate_html
-                    st.session_state.process_status = "記事構成案を生成中..."
-                    st.rerun()
                 else:
-                    st.error("キーワードを入力してください。")
+                    st.error("キーワードを入力するか、CSVファイルをアップロードしてください。")
+                    st.stop()
+
+                if articles_to_generate:
+                    st.session_state.articles_to_generate = articles_to_generate
+                    st.session_state.current_article_index = 0
+                    st.session_state.process_status = "start_processing"
+                    st.session_state.completed_articles = []
+                    st.rerun()
 
             # --- Status Display and Backend Logic ---
             if "process_status" in st.session_state:
                 status_placeholder = st.empty()
-                status_placeholder.write(f"処理状況： {st.session_state.process_status}")
+                current_index = st.session_state.get("current_article_index", 0)
+                articles = st.session_state.get("articles_to_generate", [])
+                total_articles = len(articles)
+                progress_text = f"({current_index + 1}/{total_articles}) " if total_articles > 1 else ""
+
+                status_map = {
+                    "start_processing": "処理開始...",
+                    "generating_outline": f"{progress_text}記事構成案を生成中...",
+                    "generating_article": f"{progress_text}記事を生成中...",
+                    "generating_images": f"{progress_text}画像を生成中...",
+                    "posting_to_wordpress": f"{progress_text}WordPressに投稿中...",
+                    "all_done": "全記事の投稿が完了しました！"
+                }
+                display_status = status_map.get(st.session_state.process_status, st.session_state.process_status)
+                if st.session_state.process_status != "all_done":
+                    status_placeholder.write(f"処理状況： {display_status}")
+
                 current_main_keyword = st.session_state.get("main_keyword")
+
+                def setup_gemini_client():
+                    client = genai.Client(api_key=st.secrets["gemini"]["api_key"])
+                    tools = [types.Tool(googleSearch=types.GoogleSearch())]
+                    config = types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                        tools=tools
+                    )
+                    return client, config
+
+                def generate_with_gemini(prompt, client=None, config=None):
+                    if client is None or config is None:
+                        client, config = setup_gemini_client()
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=[types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text=prompt)]
+                        )],
+                        config=config
+                    )
+                    return response.text
+
+                def handle_error(e, step):
+                    error_message = f"失敗: {step}でエラーが発生しました。詳細: {str(e)}"
+                    st.error(error_message)
+                    st.session_state.completed_articles.append({"title": current_main_keyword, "status": error_message})
+                    st.session_state.current_article_index += 1
+                    st.session_state.process_status = "start_processing"
+                    st.rerun()
+
+                if st.session_state.process_status == "start_processing":
+                    if current_index < total_articles:
+                        article_data = articles[current_index]
+                        st.session_state.main_keyword = article_data["main_keyword"]
+                        st.session_state.heading_keywords_list = article_data["heading_keywords_list"]
+                        st.session_state.affiliate_html = article_data["affiliate_html"]
+                        st.session_state.generated_outline, st.session_state.generated_article, st.session_state.generated_images = None, None, []
+                        st.session_state.process_status = "generating_outline"
+                        st.rerun()
+                    else:
+                        st.session_state.process_status = "all_done"
+                        st.rerun()
+
                 current_heading_keywords_list = st.session_state.get("heading_keywords_list")
 
-                if st.session_state.process_status == "記事構成案を生成中...":
+                if st.session_state.process_status == "generating_outline":
                     try:
-                        os.environ["GOOGLE_API_KEY"] = st.secrets["gemini"]["api_key"]
-                        client = genai.Client()
-                        grounding_tool = types.Tool(google_search=types.GoogleSearch())
-                        generation_config = types.GenerateContentConfig(tools=[grounding_tool])
-
                         midashi_prompt_template = st.secrets["prompts"]["midashi_prompt"]
-                        midashi_prompt = midashi_prompt_template.replace("｛チャットで入力した▼メインキーワード｝", current_main_keyword)
-                        midashi_prompt = midashi_prompt.replace("｛チャットで入力した▼見出し用キーワードリスト｝", current_heading_keywords_list)
-
-                        midashi_response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=midashi_prompt,
-                            config=generation_config,
-                        )
-
-                        st.session_state.generated_outline = midashi_response.text
-                        st.session_state.process_status = "記事を生成中..."
+                        midashi_prompt = midashi_prompt_template.replace("｛チャットで入力した▼メインキーワード｝", current_main_keyword).replace("｛チャットで入力した▼見出し用キーワードリスト｝", current_heading_keywords_list)
+                        midashi_response = generate_with_gemini(midashi_prompt)
+                        st.session_state.generated_outline = midashi_response
+                        st.session_state.process_status = "generating_article"
                         st.rerun()
                     except Exception as e:
-                        st.session_state.process_status = f"エラー: 記事構成案生成中に問題が発生しました - {e}"
-                        st.rerun()
+                        handle_error(e, "記事構成案生成")
 
-                elif st.session_state.process_status == "記事を生成中...":
+                elif st.session_state.process_status == "generating_article":
                     try:
-                        os.environ["GOOGLE_API_KEY"] = st.secrets["gemini"]["api_key"]
-                        client = genai.Client()
-                        grounding_tool = types.Tool(google_search=types.GoogleSearch())
-                        generation_config = types.GenerateContentConfig(tools=[grounding_tool])
-
                         generated_outline = st.session_state.get("generated_outline")
-
-                        if not generated_outline:
-                            st.error("記事構成案が生成されていません。")
-                            st.session_state.process_status = "エラー: 記事構成案がありません。"
-                            st.rerun()
+                        if not generated_outline: raise ValueError("記事構成案が生成されていません。")
                         
                         article_prompt_template = st.secrets["prompts"]["article_prompt"]
-                        article_prompt = article_prompt_template.replace("｛チャットで入力した▼メインキーワード｝", current_main_keyword)
-                        article_prompt = article_prompt.replace("｛チャットで入力した▼見出し用キーワードリスト｝", current_heading_keywords_list)
-                        article_prompt = article_prompt.replace("｛チャットで入力した▼記事構成案｝", generated_outline)
-
-                        article_response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=article_prompt,
-                            config=generation_config,
-                        )
-
-                        st.session_state.generated_article = article_response.text
-                        st.session_state.process_status = "画像を生成中..."
+                        article_prompt = article_prompt_template.replace("｛チャットで入力した▼メインキーワード｝", current_main_keyword).replace("｛チャットで入力した▼見出し用キーワードリスト｝", current_heading_keywords_list).replace("｛チャットで入力した▼記事構成案｝", generated_outline)
+                        
+                        article_response = generate_with_gemini(article_prompt)
+                        st.session_state.generated_article = article_response
+                        st.session_state.process_status = "generating_images"
                         st.rerun()
                     except Exception as e:
-                        st.session_state.process_status = f"エラー: 記事生成中に問題が発生しました - {e}"
-                        st.rerun()
+                        handle_error(e, "記事生成")
 
-                elif st.session_state.process_status == "画像を生成中...":
+                elif st.session_state.process_status == "generating_images":
                     try:
                         st.write("--- 挿絵生成情報 ---")
-                        # OpenAI APIキーをsecretsから取得
-                        openai_api_key = st.secrets["openai"]["api_key"]
-                        # 挿絵生成用のプロンプトを作成
                         sashie_prompt_template = st.secrets["prompts"]["sashie_pronpt"]
                         article_content_for_sashie = f"メインキーワード: {current_main_keyword}\n見出し用キーワードリスト: {current_heading_keywords_list}\n記事本文: {st.session_state.get('generated_article', '')}"
                         sashie_prompt = sashie_prompt_template.replace("{article_content}", article_content_for_sashie)
                         st.write("挿絵生成用プロンプトをGeminiで生成中...")
-                        # Geminiで挿絵用プロンプトを生成
-                        os.environ["GOOGLE_API_KEY"] = st.secrets["gemini"]["api_key"]
-                        client = genai.Client()
-                        sashie_response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=sashie_prompt,
-                        )
-                        dall_e_prompt = sashie_response.text.strip()
+                        
+                        sashie_response = generate_with_gemini(sashie_prompt)
+                        dall_e_prompt = sashie_response.strip()
                         st.write(f"DALL-E用挿絵プロンプト: {dall_e_prompt}")
-                        # 6つの挿絵を生成
+                        
                         st.session_state.generated_images = []
-                        for i in range(6):
+                        for i in range(1):
                             st.write(f"挿絵 {i+1}/6 を生成中...")
                             try:
-                                response = openai.OpenAI(api_key=openai_api_key).images.generate(
-                                    model="dall-e-3",
-                                    prompt=dall_e_prompt,
-                                    n=1,
-                                    size="1792x1024",
-                                    response_format="url",
-                                )
+                                response = openai.images.generate(model="dall-e-3", prompt=dall_e_prompt, n=1, size="1792x1024", response_format="url")
                                 image_url = response.data[0].url
-                                image_bytes = None
-                                image = None
-                                mime_type = "image/png"
-                                # 画像をダウンロード
-                                try:
-                                    img_response = requests.get(image_url)
-                                    image_bytes = img_response.content
-                                    image = Image.open(io.BytesIO(image_bytes))
-                                except Exception as e:
-                                    st.error(f"画像のダウンロードまたはPILで画像化に失敗: {e}")
-                                    image = None
-                                if image and image_bytes:
-                                    st.write(f"挿絵 {i+1} 生成成功。受信データサイズ: {len(image_bytes)} bytes, MIMEタイプ: {mime_type}")
-                                    st.session_state.generated_images.append({
-                                        'bytes': image_bytes,
-                                        'mime_type': mime_type,
-                                        'index': i+1,
-                                        'image': image
-                                    })
-                                else:
-                                    st.error(f"挿絵 {i+1} の生成に失敗しました。")
+                                img_response = requests.get(image_url)
+                                image_bytes = img_response.content
+                                image = Image.open(io.BytesIO(image_bytes))
+                                st.session_state.generated_images.append({'bytes': image_bytes, 'mime_type': "image/png", 'image': image})
                             except Exception as e:
-                                st.warning(f"挿絵 {i+1} の生成中にエラーが発生しました: {e}")
+                                st.warning(f"挿絵 {i+1} の生成中にエラー: {e}")
                                 continue
                             time.sleep(1)
-                        if len(st.session_state.generated_images) > 0:
-                            st.write(f"挿絵生成完了: {len(st.session_state.generated_images)}個の挿絵を生成しました。")
-                            st.session_state.process_status = "WordPressに投稿中..."
-                            st.rerun()
-                        else:
-                            st.error("挿絵の生成に失敗しました。")
-                            st.session_state.process_status = "エラー: 挿絵生成に失敗しました。"
+                        if not st.session_state.generated_images:
+                            st.warning("挿絵の生成に失敗しましたが、記事の投稿は続行します。")
+                        st.session_state.process_status = "posting_to_wordpress"
+                        st.rerun()
                     except Exception as e:
-                        st.error("挿絵生成API呼び出しで例外が発生しました。以下に詳細を示します：")
-                        st.exception(e)
-                        st.session_state.process_status = f"エラー: 挿絵生成中に致命的な問題が発生しました。"
+                        st.warning(f"挿絵生成プロセス全体でエラーが発生しました: {e}。画像なしで投稿を続行します。")
+                        st.session_state.process_status = "posting_to_wordpress"
+                        st.rerun()
 
-                elif st.session_state.process_status == "WordPressに投稿中...":
+                elif st.session_state.process_status == "posting_to_wordpress":
                     try:
                         wp_url = st.secrets["wordpress"]["url"].rstrip('/')
                         wp_user = st.secrets["wordpress"]["username"]
@@ -308,133 +340,145 @@ else:
                         token = base64.b64encode(credentials.encode())
                         headers = {'Authorization': f'Basic {token.decode("utf-8")}'}
                         
-                        uploaded_image_ids = []
-                        image_urls = []
-                        generated_images = st.session_state.get("generated_images", [])
-
-                        if generated_images:
+                        uploaded_image_ids, image_urls = [], []
+                        if st.session_state.get("generated_images"):
                             st.write("挿絵をWordPressにアップロード中...")
-                            for i, image_data in enumerate(generated_images):
-                                st.write(f"挿絵 {i+1}/6 をアップロード中...")
-                                image_bytes = image_data['bytes']
-                                mime_type = image_data['mime_type']
-                                extension = mimetypes.guess_extension(mime_type) or ".png"
-                                filename = f"sashie-{i+1}{extension}"
-
-                                # WordPress REST APIでalt_textを含めるためにmultipart/form-dataを使用
-                                files = {
-                                    'file': (filename, image_bytes, mime_type)
-                                }
-                                media_data_payload = {
-                                    'alt_text': f"{current_main_keyword}の挿絵{i+1}" # ここで代替テキストを設定
-                                }
+                            for i, image_data in enumerate(st.session_state.generated_images):
+                                files = {'file': (f"sashie-{i+1}.png", image_data['bytes'], "image/png")}
+                                media_data_payload = {'alt_text': f"{current_main_keyword}の挿絵{i+1}"}
                                 upload_response = requests.post(f"{wp_url}/media", headers=headers, files=files, data=media_data_payload)
-                                
-                                if upload_response.status_code >= 200 and upload_response.status_code < 300:
+                                if upload_response.ok:
                                     media_data = upload_response.json()
                                     uploaded_image_ids.append(media_data['id'])
                                     image_urls.append(media_data['source_url'])
-                                    st.write(f"挿絵 {i+1} のアップロードが完了しました。")
                                 else:
-                                    st.warning(f"挿絵 {i+1} のアップロードに失敗しました: {upload_response.text}")
+                                    st.warning(f"挿絵 {i+1} のアップロードに失敗: {upload_response.text}")
 
                         article_content = st.session_state.generated_article
                         if image_urls:
-                            # 記事の適切な位置に挿絵を挿入
                             lines = article_content.split('\n')
                             new_lines = []
                             image_index = 0
-                            
                             for line in lines:
                                 new_lines.append(line)
-                                # H3見出しの後に挿絵を挿入（ただし最初のH3の前には挿入しない）
                                 if '<h3>' in line and image_index < len(image_urls):
                                     new_lines.append(f'<img src="{image_urls[image_index]}" alt="{current_main_keyword}の挿絵{image_index+1}" style="max-width: 100%; height: auto; margin: 20px 0;" />')
                                     image_index += 1
-                            
                             article_content = '\n'.join(new_lines)
                         
-                        # Remove the first and last lines from article_content
                         lines = article_content.split('\n')
-                        if len(lines) > 2:  # Ensure there are at least 3 lines to remove first and last
-                            article_content = '\n'.join(lines[1:-1])
-                        elif len(lines) == 2: # If only two lines, make it empty
-                            article_content = ""
-                        elif len(lines) == 1: # If only one line, make it empty
-                            article_content = ""
+                        if len(lines) > 2: article_content = '\n'.join(lines[1:-1])
+                        
+                        article_content = re.sub(r'\[\\d+(?:\\s*,\\s*\\d+)*\]', '', article_content)
 
-                        # Remove annotation tags like [1], [1,2,3], etc.
-                        import re
-                        # Pattern to match [数字] or [数字,数字,数字] format (including spaces)
-                        annotation_pattern = r'\[\d+(?:\s*,\s*\d+)*\]'
-                        article_content = re.sub(annotation_pattern, '', article_content)
-
-                        # Handle affiliate HTML replacement
                         affiliate_html = st.session_state.get("affiliate_html", "")
                         if affiliate_html.strip():
-                            # Replace {アフィリエイト} with the provided HTML wrapped in WordPress HTML block
                             wrapped_affiliate_html = f"<!-- wp:html -->\n{affiliate_html}\n<!-- /wp:html -->"
                             article_content = article_content.replace("{アフィリエイト}", wrapped_affiliate_html)
                         else:
-                            # Remove {アフィリエイト} if no affiliate HTML is provided
                             article_content = article_content.replace("{アフィリエイト}", "")
 
-                        # Configure the client
-                        client = genai.Client()
-
-                        # Define the grounding tool
-                        grounding_tool = types.Tool(
-                            google_search=types.GoogleSearch()
-                        )
-
-                        # Configure generation settings
-                        generation_config = types.GenerateContentConfig(
-                            tools=[grounding_tool]
-                        )
-
-                        # Generate title using Gemini
                         title_prompt_template = st.secrets["prompts"]["title_prompt"]
-                        title_prompt = title_prompt_template.replace("｛チャットで入力した▼メインキーワード｝", current_main_keyword)
-                        title_prompt = title_prompt_template.replace("{article_content}", article_content)
+                        title_prompt = title_prompt_template.replace("｛チャットで入力した▼メインキーワード｝", current_main_keyword).replace("{article_content}", article_content)
+                        title_response = generate_with_gemini(title_prompt)
+                        title = title_response.strip()
 
-                        title_response = client.models.generate_content(
-                            model="gemini-2.5-pro",
-                            contents=title_prompt,
-                            config=generation_config,
-                        )
-                        title = title_response.text.strip()
+                        #カテゴリー生成
+                        category_prompt_template = st.secrets["prompts"]["category_prompt"]
+                        category_prompt = category_prompt_template.replace("{article_content}", article_content)
+                        category_response = generate_with_gemini(category_prompt)
+                        category = category_response.strip()
+                        # カテゴリー名称のリスト
+                        category_names = ["PC家電", "生活雑貨", "美容", "食品", "飲料", "キッチン", "インテリア", "ファッション", "アパレル", "キッズベビー", "趣味", "ホビー", "ゲーム"]
+                        if category not in category_names:
+                            category = "どこで買える"
 
+                        # カテゴリーの処理
+                        try:
+                            # カテゴリーの取得
+                            categories_response = requests.get(f"{wp_url}/categories", headers=headers, params={'per_page': 100})
+                            if not categories_response.ok:
+                                raise Exception(f"カテゴリー情報の取得に失敗: {categories_response.text}")
+                            
+                            categories = categories_response.json()
+                            category_id = None
+                            
+                            # 既存のカテゴリーから検索
+                            for cat in categories:
+                                if cat['name'].lower() == category.lower():  # 大文字小文字を区別しない比較
+                                    category_id = cat['id']
+                                    break
+                            
+                            # カテゴリーが存在しない場合は新規作成
+                            if category_id is None:
+                                new_category = {
+                                    'name': category,
+                                    'description': f'「{category}」に関する記事一覧'
+                                }
+                                create_response = requests.post(f"{wp_url}/categories", headers=headers, json=new_category)
+                                if not create_response.ok:
+                                    raise Exception(f"カテゴリーの作成に失敗: {create_response.text}")
+                                category_id = create_response.json()['id']
+                            
+                            # カテゴリーIDをセッションに保存
+                            st.session_state.generated_category_id = category_id
+                            
+                        except Exception as e:
+                            st.warning(f"カテゴリー処理中にエラー: {str(e)}")
+                            category_id = None
+                        
+                        # 投稿データの作成
                         post = {
                             'title': title,
                             'content': article_content,
                             'status': 'draft',
-                            'featured_media': uploaded_image_ids[0] if uploaded_image_ids else 0
+                            'featured_media': uploaded_image_ids[0] if uploaded_image_ids else 0,
+                            'categories': [category_id] if category_id else []
                         }
                         
-                        st.write("記事をWordPressに投稿中...")
-                        post_url = f"{wp_url}/posts"
-                        response = requests.post(post_url, headers=headers, json=post)
+                        response = requests.post(f"{wp_url}/posts", headers=headers, json=post)
 
-                        if response.status_code >= 200 and response.status_code < 300:
-                            st.session_state.process_status = "完了！"
+                        if response.ok:
+                            st.session_state.completed_articles.append({"title": title, "status": "成功"})
                         else:
                             error_message = response.text
-                            if "text/html" in response.headers.get("Content-Type", ""):
-                                error_message = "WordPressサーバーから予期せぬHTML応答がありました。secrets.tomlのURLが間違っている可能性があります (404 Not Found)。"
-                            st.session_state.process_status = f"エラー: WordPress投稿失敗. URL: {post_url}, Code: {response.status_code}, Msg: {error_message[:500]}"
+                            if "text/html" in response.headers.get("Content-Type", ""): error_message = "WordPressサーバーから予期せぬHTML応答 (404等)"
+                            st.session_state.completed_articles.append({"title": title or current_main_keyword, "status": f"失敗: {error_message[:100]}"})
+                        
+                        st.session_state.current_article_index += 1
+                        st.session_state.process_status = "start_processing"
                         st.rerun()
-
                     except Exception as e:
-                        st.session_state.process_status = f"エラー: WordPress投稿中に予期せぬ問題が発生しました - {e}"
+                        handle_error(e, "WordPress投稿")
+
+                elif st.session_state.process_status == "all_done":
+                    status_placeholder.empty()
+                    st.success("全ての処理が完了しました！")
+                    st.markdown("### 処理結果")
+                    completed = st.session_state.get("completed_articles", [])
+                    if completed:
+                        for result in completed:
+                            st.write(f"- **記事:** {result.get('title', 'N/A')}  **ステータス:** {result.get('status', 'N/A')}")
+                    else:
+                        st.write("処理された記事はありません。")
+                    
+                    for key in list(st.session_state.keys()):
+                        if key not in ['token']:
+                            del st.session_state[key]
+                    if st.button("リセット"):
                         st.rerun()
 
-                if "generated_article" in st.session_state:
-                    st.markdown("### 生成された記事プレビュー")
-                    if st.session_state.get("generated_images"):
+
+                if "generated_article" in st.session_state and st.session_state.generated_article and st.session_state.process_status != 'all_done':
+                    with st.expander("現在生成中の記事プレビュー", expanded=True):
                         st.markdown("#### 生成された挿絵")
-                        for i, image_data in enumerate(st.session_state.generated_images):
-                            st.image(image_data['image'], caption=f"挿絵 {i+1}")
-                    st.markdown(st.session_state.generated_article)
+                        if st.session_state.get("generated_images"):
+                            for i, image_data in enumerate(st.session_state.generated_images):
+                                st.image(image_data['image'], caption=f"挿絵 {i+1}")
+                        else:
+                            st.write("挿絵はありません。")
+                        st.markdown("#### 生成された記事")
+                        st.markdown(st.session_state.generated_article)
 
         elif user_email:
             st.error(f"アクセスが許可されていません。現在 {user_email} でログインしています。")
