@@ -1,3 +1,13 @@
-.streamlit/
-secrets.toml
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Environment variables
 .env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# VS Code
+.vscode/
