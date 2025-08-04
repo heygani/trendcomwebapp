@@ -309,7 +309,7 @@ else:
                         st.write(f"DALL-E用挿絵プロンプト: {dall_e_prompt}")
                         
                         st.session_state.generated_images = []
-                        for i in range(1):
+                        for i in range(6):
                             st.write(f"挿絵 {i+1}/6 を生成中...")
                             try:
                                 response = openai.images.generate(model="dall-e-3", prompt=dall_e_prompt, n=1, size="1792x1024", response_format="url")
