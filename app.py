@@ -127,6 +127,12 @@ else:
             # --- Main Application Page ---
             st.header("📝 記事生成")
 
+            # 予約投稿日の選択カレンダー
+            reservation_date = st.date_input(
+                "予約投稿の開始日を選択してください",
+                datetime.date.today()
+            )
+
             uploaded_file = st.file_uploader(
                 "CSVファイルをアップロードして複数記事を生成 (1列目: キーワード, 2列目: アフィリエイトHTML)",
                 type=['csv']
@@ -201,6 +207,7 @@ else:
                     st.session_state.current_article_index = 0
                     st.session_state.process_status = "start_processing"
                     st.session_state.completed_articles = []
+                    st.session_state.reservation_date = reservation_date  # 予約日をセッションに保存
                     st.rerun()
 
             # --- Status Display and Backend Logic ---
@@ -369,7 +376,7 @@ else:
                         lines = article_content.split('\n')
                         if len(lines) > 2: article_content = '\n'.join(lines[1:-1])
                         
-                        article_content = re.sub(r'\[\\d+(?:\\s*,\\s*\\d+)*\]', '', article_content)
+                        article_content = re.sub(r'\s*\[\d+(,\d+)*\]$', '', article_content.strip())
 
                         affiliate_html = st.session_state.get("affiliate_html", "")
                         if affiliate_html.strip():
@@ -382,6 +389,11 @@ else:
                         title_prompt = title_prompt_template.replace("｛チャットで入力した▼メインキーワード｝", current_main_keyword).replace("{article_content}", article_content)
                         title_response = generate_with_gemini(title_prompt)
                         title = title_response.strip()
+
+                        # パーマリンク生成
+                        permalink_prompt_template = st.secrets["prompts"]["permalink_prompt"]
+                        permalink_prompt = permalink_prompt_template.replace("{blog_title}", title)
+                        slug = generate_with_gemini(permalink_prompt).strip()
 
                         #カテゴリー生成
                         category_prompt_template = st.secrets["prompts"]["category_prompt"]
@@ -427,11 +439,17 @@ else:
                             st.warning(f"カテゴリー処理中にエラー: {str(e)}")
                             category_id = None
                         
+                        # 投稿日を計算
+                        post_date = st.session_state.reservation_date + datetime.timedelta(days=current_index)
+                        post_date_iso = post_date.isoformat() + "T12:00:00"
+
                         # 投稿データの作成
                         post = {
                             'title': title,
                             'content': article_content,
                             'status': 'draft',
+                            'date': post_date_iso,
+                            'slug': slug,
                             'featured_media': uploaded_image_ids[0] if uploaded_image_ids else 0,
                             'categories': [category_id] if category_id else []
                         }
